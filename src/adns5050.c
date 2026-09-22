@@ -68,6 +68,10 @@ static void adns5050_serial_write(const struct device *dev, uint8_t data)
 	const struct adns5050_config *config = dev->config;
 	int8_t b;
 
+	/* SDIO switches to output at the START of the write phase, matching
+	 * QMK's serial_write(). Between transactions it stays input. */
+	gpio_pin_configure_dt(&config->sdio, GPIO_OUTPUT_INACTIVE);
+
 	for (b = 7; b >= 0; b--) {
 		gpio_pin_set_dt(&config->sclk, 0);
 		gpio_pin_set_dt(&config->sdio, (data & BIT(b)) ? 1 : 0);
@@ -78,9 +82,6 @@ static void adns5050_serial_write(const struct device *dev, uint8_t data)
 	/* tSWR: minimum delay between writing a register address and reading
 	 * data back from it. QMK waits 4us here unconditionally. */
 	k_busy_wait(4);
-
-	/* Restore the write idles for the next phase. */
-	gpio_pin_configure_dt(&config->sdio, GPIO_OUTPUT_INACTIVE);
 }
 
 static uint8_t adns5050_serial_read(const struct device *dev)
@@ -89,8 +90,10 @@ static uint8_t adns5050_serial_read(const struct device *dev)
 	uint8_t byte = 0;
 	uint8_t i;
 
-	/* SDIO switches to input for the read phase. */
-	gpio_pin_configure_dt(&config->sdio, GPIO_INPUT);
+	/* SDIO switches to input for the read phase. Pull-up keeps the line
+	 * defined while the sensor drives it, and while it is high-Z between
+	 * transactions (nRF input pins float without a pull). */
+	gpio_pin_configure_dt(&config->sdio, GPIO_INPUT | GPIO_PULL_UP);
 
 	for (i = 0; i < 8; i++) {
 		gpio_pin_set_dt(&config->sclk, 0);
@@ -100,8 +103,10 @@ static uint8_t adns5050_serial_read(const struct device *dev)
 		k_busy_wait(1);
 	}
 
-	/* Back to output so the next write phase can drive the line. */
-	gpio_pin_configure_dt(&config->sdio, GPIO_OUTPUT_INACTIVE);
+	/* No tail reconfigure: SDIO stays input until the next write phase
+	 * begins (QMK structure). Driving it low here while CS is asserted
+	 * - e.g. between the two burst bytes - fights the sensor's output
+	 * driver and corrupts the second byte. */
 
 	return byte;
 }
@@ -183,8 +188,15 @@ static void adns5050_init_work_fn(struct k_work *work)
 	pid2 = adns5050_read_reg(dev, ADNS5050_REG_PRODUCT_ID2);
 	if (pid != ADNS5050_PRODUCT_ID || rid != ADNS5050_REVISION_ID ||
 	    pid2 != ADNS5050_PRODUCT_ID2) {
-		LOG_WRN("unexpected signature: PID 0x%02x REV 0x%02x PID2 0x%02x", pid, rid,
-			pid2);
+		/* Signature mismatch: sensor absent, miswired, or the bus reads
+		 * garbage. Do NOT start the poll timer and do NOT mark ready -
+		 * a dead trackball beats a cursor that drifts on corrupt reads. */
+		LOG_ERR("signature check FAILED: PID 0x%02x (want 0x%02x) "
+			"REV 0x%02x (want 0x%02x) PID2 0x%02x (want 0x%02x) "
+			"- trackball polling disabled, check wiring/SDIO",
+			pid, ADNS5050_PRODUCT_ID, rid, ADNS5050_REVISION_ID, pid2,
+			ADNS5050_PRODUCT_ID2);
+		return;
 	}
 
 	adns5050_set_cpi(dev, config->cpi);
@@ -211,6 +223,16 @@ static void adns5050_poll_work_fn(struct k_work *work)
 	int32_t x, y;
 
 	if (!data->ready) {
+		return;
+	}
+
+	/* Gate on the MOTION register bit 7: skip the burst entirely when no
+	 * motion occurred. At rest the deltas are 0 on a healthy read path,
+	 * but ANY corrupted read becomes visible drift if reported, so do not
+	 * trust delta reads that the sensor itself did not flag as motion.
+	 * Reading MOTION does not clear Delta_X/Delta_Y (only writing to the
+	 * Motion register does), so gate-then-burst loses nothing. */
+	if (!(adns5050_read_reg(dev, ADNS5050_REG_MOTION) & BIT(7))) {
 		return;
 	}
 
