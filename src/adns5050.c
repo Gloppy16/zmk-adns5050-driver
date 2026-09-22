@@ -17,9 +17,15 @@
 #include <zephyr/kernel.h>
 #include <zephyr/drivers/gpio.h>
 #include <zephyr/input/input.h>
-#include <zmk/keymap.h>
 
 #include "adns5050.h"
+
+/* zmk/keymap.h is not exported to external modules on ZMK v0.3.0
+ * (app/CMakeLists.txt keeps the include dir PRIVATE to the app target),
+ * so declare the single API used here. Signature pinned to v0.3.0:
+ * returns the highest active layer INDEX (uint8_t). */
+typedef uint8_t zmk_keymap_layer_index_t;
+zmk_keymap_layer_index_t zmk_keymap_highest_layer_active(void);
 
 #include <zephyr/logging/log.h>
 LOG_MODULE_REGISTER(adns5050, CONFIG_INPUT_LOG_LEVEL);
