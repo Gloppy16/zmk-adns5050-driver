@@ -72,7 +72,12 @@ Add the module to `west.yml`:
 - Scroll mode reports `INPUT_REL_WHEEL` / `INPUT_REL_HWHEEL` when the highest
   active keymap layer matches one of `scroll-layers`.
 - The sensor is reset and primed asynchronously at boot (system workqueue),
-  then the poll timer starts; a signature mismatch is logged but not fatal.
+  then the poll timer starts; a signature mismatch disables polling and the
+  trackball stays silent (check wiring).
+- Each poll issues ONE Motion_Burst transaction and reports the deltas if
+  non-zero. The Motion register (0x02) is never read: its read side effects
+  are ambiguous in the datasheet and a pre-burst 0x02 gate rendered the
+  trackball dead on the bench (ee9651f regression, fixed here).
 
 ## License
 

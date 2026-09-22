@@ -226,16 +226,18 @@ static void adns5050_poll_work_fn(struct k_work *work)
 		return;
 	}
 
-	/* Gate on the MOTION register bit 7: skip the burst entirely when no
-	 * motion occurred. At rest the deltas are 0 on a healthy read path,
-	 * but ANY corrupted read becomes visible drift if reported, so do not
-	 * trust delta reads that the sensor itself did not flag as motion.
-	 * Reading MOTION does not clear Delta_X/Delta_Y (only writing to the
-	 * Motion register does), so gate-then-burst loses nothing. */
-	if (!(adns5050_read_reg(dev, ADNS5050_REG_MOTION) & BIT(7))) {
-		return;
-	}
-
+	/* One burst transaction per poll; no separate pre-read of the Motion
+	 * register (0x02) before the burst. The ADNS-5050 datasheet is
+	 * ambiguous about read side effects on 0x02: only writing is
+	 * documented to clear MOT/Delta_X/Delta_Y, but the MOT bit is defined
+	 * as "motion ... since the last time it was read", and bench testing
+	 * showed gate-then-burst reporting no motion at all - consistent with
+	 * the Motion read consuming/clearing the pending deltas before the
+	 * burst could fetch them. QMK's reference driver for this chip never
+	 * reads 0x02: it bursts every poll and discards 0/0 deltas, which is
+	 * what this driver does too. (Note: unlike the PMW3360, the ADNS-5050
+	 * burst carries no Motion byte - it starts at Delta_X - so the report
+	 * gate is the burst's own deltas, not a MOT bit.) */
 	adns5050_read_burst(dev, &dx, &dy);
 	if (dx == 0 && dy == 0) {
 		return;
