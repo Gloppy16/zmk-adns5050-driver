@@ -1,2 +1,0 @@
-# sensorディレクトリのCMakeLists.txt
-add_subdirectory_ifdef(CONFIG_INPUT_ADNS5050 adns5050)

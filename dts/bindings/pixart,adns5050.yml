@@ -1,0 +1,71 @@
+# Copyright (c) 2026 Gloppy16
+# SPDX-License-Identifier: GPL-2.0-or-later
+#
+# ADNS-5050 over a 3-wire bit-banged bus (SCLK / SDIO / CS), no SPI hardware,
+# no MOTION interrupt line. Polling driver for ZMK.
+
+description: |
+  Pixart ADNS-5050 optical mouse sensor, bit-banged 3-wire serial bus.
+
+  The ADNS-5050 uses a half-duplex single-data-line serial protocol that
+  hardware SPI controllers (e.g. nRF SPIM) cannot drive, so the three
+  signal pins are bit-banged as plain GPIOs:
+
+    sclk-gpios = serial clock, idles LOW
+    sdio-gpios = bidirectional data line
+    cs-gpios   = chip select, idles HIGH, active LOW
+
+  Motion is polled; there is no MOTION pin on the cocot46plus trackball.
+
+compatible: "pixart,adns5050"
+
+properties:
+  sclk-gpios:
+    type: phandle-array
+    required: true
+    description: Serial clock pin (idles low).
+
+  sdio-gpios:
+    type: phandle-array
+    required: true
+    description: Bidirectional serial data pin.
+
+  cs-gpios:
+    type: phandle-array
+    required: true
+    description: Chip select pin (active low).
+
+  cpi:
+    type: int
+    default: 500
+    enum:
+      - 125
+      - 250
+      - 375
+      - 500
+      - 625
+      - 750
+      - 875
+      - 1000
+      - 1125
+      - 1250
+      - 1375
+    description: |
+      Counts per inch, in 125 CPI steps (register value 1..13).
+      Default 500, matching QMK's cocot46plus default.
+
+  invert-x:
+    type: boolean
+    description: Invert the reported X axis direction.
+
+  invert-y:
+    type: boolean
+    description: Invert the reported Y axis direction.
+
+  scroll-layers:
+    type: array
+    default: []
+    description: |
+      Layer indexes on which trackball motion is reported as wheel
+      scrolling instead of cursor movement. The value is compared
+      against zmk_keymap_highest_layer_active().

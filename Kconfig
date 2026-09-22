@@ -1,0 +1,21 @@
+# Copyright (c) 2026 Gloppy16
+# SPDX-License-Identifier: GPL-2.0-or-later
+
+menuconfig ADNS5050
+	bool "ADNS-5050 optical mouse sensor (bit-banged 3-wire)"
+	default y
+	depends on DT_HAS_PIXART_ADNS5050_ENABLED
+	depends on GPIO
+	depends on INPUT
+	help
+	  Enable the driver for Pixart ADNS-5050 optical mouse sensors
+	  connected over a bit-banged 3-wire serial bus (SCLK / SDIO / CS).
+	  The sensor is polled; no MOTION interrupt line is required.
+
+if ADNS5050
+
+module = ADNS5050
+module-str = adns5050
+source "subsys/logging/Kconfig.template.log_config"
+
+endif # ADNS5050

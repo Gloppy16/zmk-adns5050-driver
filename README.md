@@ -1,72 +1,46 @@
-ADNS5050 driver implementation for ZMK with at least Zephyr 3.5
+# zmk-adns5050-driver
 
-This work is based on [ufan's zmk pixart sensor drivers](https://github.com/ufan/zmk/tree/support-trackpad) and [inorichi's zmk-pmw3610-driver](https://github.com/inorichi/zmk-pmw3610-driver).
+ZMK input driver for the Pixart **ADNS-5050** optical mouse sensor over a
+**bit-banged 3-wire serial bus** (SCLK / SDIO / CS), with polled motion
+reporting and configurable scroll layers.
 
-**Important:** This driver now uses **GPIO bit-banging** instead of SPI, matching QMK's implementation for better hardware compatibility.
+This is a continuation of [msfmfjt/zmk-adns5050-driver](https://github.com/msfmfjt/zmk-adns5050-driver),
+rewritten because the original driver targeted hardware SPI plus a MOTION
+interrupt pin. The ADNS-5050's half-duplex single-data-line protocol cannot be
+produced by hardware SPI controllers such as the nRF52's SPIM (MOSI cannot be
+tri-stated mid-transfer), so the bus is bit-banged on three plain GPIOs —
+the same approach as QMK's `drivers/sensors/adns5050.c`, from which the
+transport is ported (GPL-2.0-or-later, © Ploopy Corporation, Drashna Jael're,
+Sunjun Kim, Hiroyuki Okada).
 
-## Features
+Developed for and tested on the [cocot46plus](https://github.com/aki27kbd/cocot46plus)
+trackball (nice_nano_v2).
 
-- **GPIO bit-banging communication** (compatible with QMK hardware setups)
-- **Polling-based operation** (no IRQ pin required)
-- Configurable polling interval (default 8ms for 125Hz)
-- Support for scroll layers and snipe layers
-- Configurable sensor orientation
-- X/Y axis inversion support
-- Auto-mouse layer activation
-- Direct GPIO control for SCLK, SDIO (bidirectional), and CS pins
+## Properties
 
-## Installation
+| Property       | Type         | Description                                                    |
+| -------------- | ------------ | -------------------------------------------------------------- |
+| `sclk-gpios`   | phandle-array| Serial clock (idles low)                                       |
+| `sdio-gpios`   | phandle-array| Bidirectional data line                                        |
+| `cs-gpios`     | phandle-array| Chip select (active low)                                       |
+| `cpi`          | int          | 125..1375 in 125-CPI steps (default 500)                       |
+| `invert-x`     | flag         | Invert X direction                                             |
+| `invert-y`     | flag         | Invert Y direction                                             |
+| `scroll-layers`| array        | Layer indexes on which motion is reported as wheel scrolling   |
 
-Only GitHub actions builds are covered here. Local builds are different for each user, therefore it's not possible to cover all cases.
-
-Include this project on your ZMK's west manifest in `config/west.yml`:
-
-```yml
-manifest:
-  remotes:
-    - name: zmkfirmware
-      url-base: https://github.com/petejohanson
-    - name: msfmfjt
-      url-base: https://github.com/msfmfjt
-  projects:
-    - name: zmk
-      remote: zmkfirmware
-      revision: feat/pointers-move-scroll
-      import: app/west.yml
-    - name: zmk-adns5050-driver
-      remote: msfmfjt
-      revision: main
-  self:
-    path: config
-```
-
-Then, edit your `build.yml` to look like this, 3.5 is now on main:
-
-```yml
-on: [workflow_dispatch]
-
-jobs:
-  build:
-    uses: zmkfirmware/zmk/.github/workflows/build-user-config.yml@main
-```
-
-Now, update your `board.overlay` adding the necessary bits (update the pins for your board accordingly):
+## Usage
 
 ```dts
 / {
-    trackball: trackball {
-        status = "okay";
+    trackball: adns5050@0 {
         compatible = "pixart,adns5050";
-        
-        // GPIO pin assignments (update for your board)
-        sclk-gpios = <&gpio0 8 GPIO_ACTIVE_HIGH>;    // Serial clock pin
-        sdio-gpios = <&gpio0 17 GPIO_ACTIVE_HIGH>;   // Serial data I/O pin (bidirectional)
-        cs-gpios = <&gpio0 20 GPIO_ACTIVE_LOW>;      // Chip select pin
-
-        /*   optional features   */
-        // snipe-layers = <1>;
-        // scroll-layers = <2 3>;
-        // automouse-layer = <4>;
+        sclk-gpios = <&pro_micro 16 GPIO_ACTIVE_HIGH>;   /* B2 */
+        sdio-gpios = <&pro_micro 8  GPIO_ACTIVE_HIGH>;   /* B4 */
+        cs-gpios   = <&pro_micro 9  GPIO_ACTIVE_LOW>;    /* B5 */
+        cpi = <500>;
+        invert-x;
+        invert-y;
+        scroll-layers = <1 2>;
     };
 
     trackball_listener {
@@ -76,40 +50,30 @@ Now, update your `board.overlay` adding the necessary bits (update the pins for 
 };
 ```
 
-## Pin Configuration
-
-The ADNS5050 requires three GPIO pins:
-
-- **SCLK (Serial Clock)**: Connect to your chosen GPIO pin
-- **SDIO (Serial Data I/O)**: Bidirectional data pin, connect to your chosen GPIO pin  
-- **CS (Chip Select)**: Active-low chip select pin
-
-**Important:** The SDIO pin must support both input and output modes as it's bidirectional. The driver automatically switches between input (during reads) and output (during writes) modes.
-
-Now enable the driver config in your `board.config` file (read the Kconfig file to find out all possible options):
-
 ```conf
-# Core requirements for GPIO-based ADNS5050 driver
 CONFIG_GPIO=y
 CONFIG_INPUT=y
-CONFIG_ZMK_MOUSE=y
 CONFIG_ADNS5050=y
-
-# Optional: Set polling interval (default 8ms = 125Hz)
-# CONFIG_ADNS5050_POLLING_INTERVAL_MS=8
-
-# Optional: Enable detailed logging for debugging
-# CONFIG_LOG=y
-# CONFIG_ADNS5050_LOG_LEVEL_DBG=y
+CONFIG_ZMK_POINTING=y
 ```
 
-## Hardware Compatibility
+Add the module to `west.yml`:
 
-This implementation uses GPIO bit-banging that matches QMK's ADNS5050 driver behavior. If your hardware works with QMK's ADNS5050 driver, it should work with this ZMK implementation using the same pin connections.
+```yaml
+- name: zmk-adns5050-driver
+  url: https://github.com/Gloppy16/zmk-adns5050-driver
+  revision: main
+```
 
-## Troubleshooting
+## Design notes
 
-- **Product ID read failures**: Ensure GPIO pins are correctly configured and connected
-- **No sensor response**: Verify SDIO pin supports bidirectional operation  
-- **Timing issues**: The driver uses microsecond-level delays matching QMK's implementation
-- **Enable debug logging** to see detailed communication with the sensor
+- Motion is polled every 8 ms (`k_timer` → `k_work` on the system workqueue);
+  no MOTION pin is used.
+- Scroll mode reports `INPUT_REL_WHEEL` / `INPUT_REL_HWHEEL` when the highest
+  active keymap layer matches one of `scroll-layers`.
+- The sensor is reset and primed asynchronously at boot (system workqueue),
+  then the poll timer starts; a signature mismatch is logged but not fatal.
+
+## License
+
+GPL-2.0-or-later (inherited from the QMK transport this driver ports).

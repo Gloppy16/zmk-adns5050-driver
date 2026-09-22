@@ -1,3 +1,5 @@
 build:
-  cmake: zephyr
-  kconfig: zephyr/Kconfig
+  cmake: .
+  kconfig: Kconfig
+  settings:
+    dts_root: .
