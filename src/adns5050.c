@@ -28,9 +28,28 @@ typedef uint8_t zmk_keymap_layer_index_t;
 zmk_keymap_layer_index_t zmk_keymap_highest_layer_active(void);
 
 #include <zephyr/logging/log.h>
-LOG_MODULE_REGISTER(adns5050, CONFIG_INPUT_LOG_LEVEL);
+/* Register at a fixed level, NOT a CONFIG_* symbol: this driver's only log
+ * lines are the init verdict ("ready" / "signature check FAILED"), which is
+ * the bench oracle. A Kconfig default (or a stray =0 in a conf file) must
+ * never be able to compile the oracle out. LOG_LEVEL_INF is defined as 3U in
+ * zephyr/logging/log_core.h (Zephyr 3.5) and is accepted directly by
+ * LOG_MODULE_REGISTER (the level argument is used verbatim, no Kconfig
+ * indirection). */
+LOG_MODULE_REGISTER(adns5050, LOG_LEVEL_INF);
 
 #define ADNS5050_POLL_MS 8
+
+/* Bench visibility: the only adns5050 log lines are emitted during init,
+ * which runs ~100 ms after power-on - long before the CDC-ACM console is
+ * enumerated. Zephyr's CDC driver drops output while the device is
+ * unconfigured, so a terminal opened after plug-in (the normal bench flow)
+ * never sees the boot-time verdict. Retry init a few times (covers a slow
+ * sensor power-up) and then re-log the verdict periodically for ~1 minute
+ * so the oracle is visible whenever the console is opened. */
+#define ADNS5050_INIT_ATTEMPTS 3
+#define ADNS5050_INIT_RETRY_DELAY_MS 2000
+#define ADNS5050_ANNOUNCE_INTERVAL_MS 5000
+#define ADNS5050_ANNOUNCE_COUNT 12
 
 struct adns5050_config {
 	struct gpio_dt_spec sclk;
@@ -47,8 +66,15 @@ struct adns5050_data {
 	const struct device *dev;
 	struct k_timer poll_timer;
 	struct k_work poll_work;
-	struct k_work init_work;
+	/* Delayable: init retries are rescheduled from inside the handler. */
+	struct k_work_delayable init_work;
+	struct k_timer announce_timer;
+	uint8_t init_attempts;
+	uint8_t announce_left;
 	bool ready;
+	uint8_t pid;
+	uint8_t rid;
+	uint8_t pid2;
 };
 
 /* CS pulse while SCLK is low: resynchronizes the chip's serial state machine
@@ -163,14 +189,45 @@ static void adns5050_set_cpi(const struct device *dev, uint16_t cpi)
 	adns5050_write_reg(dev, ADNS5050_REG_MOUSE_CONTROL2, BIT(4) | cpival);
 }
 
-/* Non-blocking init: reset, wait for wake-up, prime the serial interface,
- * apply CPI, then start the poll timer. Runs on the system workqueue. */
-static void adns5050_init_work_fn(struct k_work *work)
+/* Re-log the init verdict periodically (see ADNS5050_ANNOUNCE_* above).
+ * Runs in timer (ISR) context - deferred-mode logging is ISR-safe. */
+static void adns5050_announce_timer_fn(struct k_timer *timer)
 {
-	struct adns5050_data *data = CONTAINER_OF(work, struct adns5050_data, init_work);
+	struct adns5050_data *data = CONTAINER_OF(timer, struct adns5050_data, announce_timer);
 	const struct device *dev = data->dev;
 	const struct adns5050_config *config = dev->config;
-	uint8_t pid, rid, pid2;
+
+	if (data->ready) {
+		LOG_INF("ADNS-5050 ready, CPI %u", config->cpi);
+	} else {
+		LOG_ERR("signature check FAILED: PID 0x%02x (want 0x%02x) "
+			"REV 0x%02x (want 0x%02x) PID2 0x%02x (want 0x%02x) "
+			"- trackball polling disabled, check wiring/SDIO",
+			data->pid, ADNS5050_PRODUCT_ID, data->rid, ADNS5050_REVISION_ID,
+			data->pid2, ADNS5050_PRODUCT_ID2);
+	}
+
+	if (--data->announce_left == 0U) {
+		return; /* last announcement: do not re-arm */
+	}
+	k_timer_start(&data->announce_timer, K_MSEC(ADNS5050_ANNOUNCE_INTERVAL_MS), K_NO_WAIT);
+}
+
+static void adns5050_start_announcements(struct adns5050_data *data)
+{
+	data->announce_left = ADNS5050_ANNOUNCE_COUNT;
+	k_timer_start(&data->announce_timer, K_MSEC(ADNS5050_ANNOUNCE_INTERVAL_MS), K_NO_WAIT);
+}
+
+/* Non-blocking init: reset, wait for wake-up, prime the serial interface,
+ * apply CPI, then start the poll timer. Runs on the system workqueue.
+ * Retried a few times before the signature check is declared fatal. */
+static void adns5050_init_work_fn(struct k_work *work)
+{
+	struct k_work_delayable *dwork = k_work_delayable_from_work(work);
+	struct adns5050_data *data = CONTAINER_OF(dwork, struct adns5050_data, init_work);
+	const struct device *dev = data->dev;
+	const struct adns5050_config *config = dev->config;
 	int8_t dx, dy;
 
 	gpio_pin_configure_dt(&config->sclk, GPIO_OUTPUT_INACTIVE);
@@ -183,19 +240,33 @@ static void adns5050_init_work_fn(struct k_work *work)
 
 	adns5050_read_burst(dev, &dx, &dy); /* prime writes, discarded */
 
-	pid = adns5050_read_reg(dev, ADNS5050_REG_PRODUCT_ID);
-	rid = adns5050_read_reg(dev, ADNS5050_REG_REVISION_ID);
-	pid2 = adns5050_read_reg(dev, ADNS5050_REG_PRODUCT_ID2);
-	if (pid != ADNS5050_PRODUCT_ID || rid != ADNS5050_REVISION_ID ||
-	    pid2 != ADNS5050_PRODUCT_ID2) {
+	data->pid = adns5050_read_reg(dev, ADNS5050_REG_PRODUCT_ID);
+	data->rid = adns5050_read_reg(dev, ADNS5050_REG_REVISION_ID);
+	data->pid2 = adns5050_read_reg(dev, ADNS5050_REG_PRODUCT_ID2);
+	if (data->pid != ADNS5050_PRODUCT_ID || data->rid != ADNS5050_REVISION_ID ||
+	    data->pid2 != ADNS5050_PRODUCT_ID2) {
+		data->init_attempts++;
+		if (data->init_attempts < ADNS5050_INIT_ATTEMPTS) {
+			/* A miss can be a transient power-up race: the sensor
+			 * powers up with the board when the cable is plugged, so
+			 * retry before declaring the bus dead. */
+			LOG_WRN("signature mismatch on attempt %u/%u: "
+				"PID 0x%02x REV 0x%02x PID2 0x%02x - retrying in %d ms",
+				data->init_attempts, ADNS5050_INIT_ATTEMPTS,
+				data->pid, data->rid, data->pid2,
+				ADNS5050_INIT_RETRY_DELAY_MS);
+			k_work_schedule(&data->init_work, K_MSEC(ADNS5050_INIT_RETRY_DELAY_MS));
+			return;
+		}
 		/* Signature mismatch: sensor absent, miswired, or the bus reads
 		 * garbage. Do NOT start the poll timer and do NOT mark ready -
 		 * a dead trackball beats a cursor that drifts on corrupt reads. */
 		LOG_ERR("signature check FAILED: PID 0x%02x (want 0x%02x) "
 			"REV 0x%02x (want 0x%02x) PID2 0x%02x (want 0x%02x) "
 			"- trackball polling disabled, check wiring/SDIO",
-			pid, ADNS5050_PRODUCT_ID, rid, ADNS5050_REVISION_ID, pid2,
-			ADNS5050_PRODUCT_ID2);
+			data->pid, ADNS5050_PRODUCT_ID, data->rid, ADNS5050_REVISION_ID,
+			data->pid2, ADNS5050_PRODUCT_ID2);
+		adns5050_start_announcements(data);
 		return;
 	}
 
@@ -205,6 +276,7 @@ static void adns5050_init_work_fn(struct k_work *work)
 	k_timer_start(&data->poll_timer, K_MSEC(ADNS5050_POLL_MS), K_MSEC(ADNS5050_POLL_MS));
 
 	LOG_INF("ADNS-5050 ready, CPI %u", config->cpi);
+	adns5050_start_announcements(data);
 }
 
 static void adns5050_poll_timer_fn(struct k_timer *timer)
@@ -298,8 +370,9 @@ static int adns5050_init(const struct device *dev)
 	data->dev = dev;
 	k_work_init(&data->poll_work, adns5050_poll_work_fn);
 	k_timer_init(&data->poll_timer, adns5050_poll_timer_fn, NULL);
-	k_work_init(&data->init_work, adns5050_init_work_fn);
-	k_work_submit(&data->init_work);
+	k_timer_init(&data->announce_timer, adns5050_announce_timer_fn, NULL);
+	k_work_init_delayable(&data->init_work, adns5050_init_work_fn);
+	k_work_schedule(&data->init_work, K_NO_WAIT);
 
 	return 0;
 }
