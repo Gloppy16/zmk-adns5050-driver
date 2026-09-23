@@ -8,8 +8,10 @@
  * Copyright 2019 Hiroyuki Okada
  * SPDX-License-Identifier: GPL-2.0-or-later
  *
- * ADNS-5050 datasheet: register addresses, serial timings (tSWR, tSRAD,
- * tSRR, tSCLN/tSCLP) and the 3-wire "clocked serial" protocol.
+ * ADNS-5050 datasheet: register addresses, serial timings (tSWW, tSRAD,
+ * tSCLK-NCS, tSRR, tSCLN/tSCLP) and the 3-wire "clocked serial" protocol.
+ * Full datasheet: AV02-1045EN (April 25, 2012), 29 pages - the commonly
+ * mirrored 8-page copy is the ABBREVIATED version and lacks the AC table.
  */
 #ifndef ADNS5050_H
 #define ADNS5050_H
@@ -41,9 +43,10 @@
 #define ADNS5050_SPI_ADDRESS_WRITE  0x80u
 
 /* Expected signature */
-#define ADNS5050_PRODUCT_ID         0x12
-#define ADNS5050_REVISION_ID        0x01
-#define ADNS5050_PRODUCT_ID2        0x26
+#define ADNS5050_PRODUCT_ID          0x12
+#define ADNS5050_REVISION_ID         0x01
+#define ADNS5050_PRODUCT_ID2         0x26
+#define ADNS5050_INV_REV_ID_EXPECTED 0xfe /* p19/p28: Inv_Rev_ID = ~Revision_ID */
 
 /* Chip reset magic */
 #define ADNS5050_CHIP_RESET_MAGIC   0x5a

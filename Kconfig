@@ -18,4 +18,56 @@ module = ADNS5050
 module-str = adns5050
 source "subsys/logging/Kconfig.template.log_config"
 
+config ADNS5050_INIT_RETRIES
+	int "Signature-check retry attempts before declaring the bus dead"
+	default 5
+	range 1 20
+	help
+	  Number of full init attempts (sync pulse, Chip_Reset 0x5a write,
+	  55 ms wake, prime burst, signature reads incl. the Inv_Rev_ID 0xfe
+	  cross-check) before the sensor is declared absent. Attempts are
+	  spaced ADNS5050_INIT_RETRY_MS apart. After a failed cycle the
+	  driver re-arms one full cycle later, so a marginal joint that
+	  re-makes contact recovers without a reflash.
+
+config ADNS5050_INIT_RETRY_MS
+	int "Delay between init signature-check retries (ms)"
+	default 2000
+	range 100 60000
+
+config ADNS5050_HEALTH_CHECK_MS
+	int "Runtime health-check period (ms, 0 = off)"
+	default 1000
+	range 0 60000
+	help
+	  While the sensor is ready, periodically read Product_ID and one
+	  motion burst. A Product_ID mismatch, or ADNS5050_HEALTH_STRIKES
+	  consecutive saturated (0xFF-class) delta pairs - the signature of
+	  a re-opening SDIO joint - stops the poll timer, marks the sensor
+	  not-ready and re-runs the init retry loop. 0 disables the health
+	  check entirely.
+
+config ADNS5050_HEALTH_STRIKES
+	int "Consecutive saturated deltas before a health-check re-init"
+	default 3
+	range 1 20
+	help
+	  Number of consecutive health checks that must observe a saturated
+	  delta pair (raw dx/dy of -1 and/or 0, i.e. 0xFF-class bytes)
+	  before the driver self-heals. Raise this if legitimate very slow
+	  diagonal movement is ever mistaken for a stuck line.
+
+config ADNS5050_TSCLK_NCS_WRITE_US
+	int "tSCLK-NCS write hold time (us)"
+	default 20
+	range 1 100
+	help
+	  Minimum time between the last SCLK rising edge of a write transfer
+	  and raising NCS. ADNS-5050 datasheet (AV02-1045EN) p12 AC table,
+	  tSCLK-NCS write case: 20 us minimum "for valid SDIO data transfer".
+	  QMK and earlier versions of this driver raised NCS after only the
+	  ~4 us serial_write tail, below this minimum, so register writes
+	  (CPI, power-down, Chip_Reset) could silently abort. Leave at 20
+	  unless a bench scope says otherwise.
+
 endif # ADNS5050
