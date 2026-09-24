@@ -14,6 +14,20 @@ menuconfig ADNS5050
 
 if ADNS5050
 
+config ADNS5050_POWER_UP_DELAY_MS
+	int "Sensor power-up delay after rail-on (ms, first init attempt only)"
+	default 1000
+	range 0 10000
+	help
+	  Wait this long after enabling vcc-gpios before the first init
+	  transaction of an init cycle. The ADNS-5050 datasheet (AV02-1045EN)
+	  has no explicit power-up-to-serial-ready spec: p10 gives the supply
+	  rise time VRT (max 100 ms) and p16 notes "there will be a period of
+	  time after the power supply is high but before any clocks are
+	  available". 1 s covers both with margin. Later attempts in a retry
+	  cycle wait no extra time; 0 disables the delay (vcc-gpios is then
+	  still driven, just not waited on).
+
 module = ADNS5050
 module-str = adns5050
 source "subsys/logging/Kconfig.template.log_config"

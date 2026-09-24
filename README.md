@@ -23,6 +23,7 @@ trackball (nice_nano_v2).
 | `sclk-gpios`   | phandle-array| Serial clock (idles low)                                       |
 | `sdio-gpios`   | phandle-array| Bidirectional data line                                        |
 | `cs-gpios`     | phandle-array| Chip select (active low)                                       |
+| `vcc-gpios`    | phandle-array| Optional supply-rail enable; driven active and re-asserted at every init attempt. On switched-rail boards (nice!nano) set it to the SAME pin as the board `ext_power` node (`P0.13` on nice_nano_v2) |
 | `cpi`          | int          | 125..1375 in 125-CPI steps (default 500)                       |
 | `invert-x`     | flag         | Invert X direction                                             |
 | `invert-y`     | flag         | Invert Y direction                                             |
@@ -37,6 +38,9 @@ trackball (nice_nano_v2).
         sclk-gpios = <&pro_micro 16 GPIO_ACTIVE_HIGH>;   /* B2 */
         sdio-gpios = <&pro_micro 8  GPIO_ACTIVE_HIGH>;   /* B4 */
         cs-gpios   = <&pro_micro 9  GPIO_ACTIVE_LOW>;    /* B5 */
+        /* nice!nano only: hold the switched Pro Micro VCC rail ON (same
+           pin as the board EXT_POWER node's control-gpios) */
+        vcc-gpios  = <&gpio0 13 GPIO_ACTIVE_HIGH>;
         cpi = <500>;
         invert-x;
         invert-y;

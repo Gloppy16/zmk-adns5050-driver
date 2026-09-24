@@ -19,6 +19,15 @@
  *              120 ns  read case (satisfied by the read tail)
  * QMK (and earlier versions of this port) raised NCS ~4 us after the last
  * write bit, below the 20 us write minimum, so register writes could abort.
+ *
+ * Power (Attempt 37): on the cocot46plus the sensor VDD is jumpered to the
+ * Pro Micro VCC pin, which on the nice!nano is a SWITCHED rail - a load
+ * switch gated by P0.13, the board EXT_POWER node's control-gpios. ZMK
+ * consumers can cut that rail behind this driver's back (underglow
+ * AUTO_OFF_IDLE calls ext_power_disable() on idle; the ext_power driver
+ * restores the NVS-saved off-state after settings load), so with vcc-gpios
+ * set the driver re-asserts the rail at the top of EVERY init attempt
+ * (see adns5050_vcc_on).
  */
 
 #define DT_DRV_COMPAT pixart_adns5050
@@ -71,6 +80,9 @@ struct adns5050_config {
 	struct gpio_dt_spec sclk;
 	struct gpio_dt_spec sdio;
 	struct gpio_dt_spec cs;
+	/* Optional supply-rail control (vcc-gpios); .port is NULL when the DT
+	 * node omits the property. See adns5050_vcc_on(). */
+	struct gpio_dt_spec vcc;
 	uint16_t cpi;
 	bool invert_x;
 	bool invert_y;
@@ -116,6 +128,28 @@ static void adns5050_sync(const struct device *dev)
 	gpio_pin_set_dt(&config->cs, 1);
 	k_busy_wait(1);
 	gpio_pin_set_dt(&config->cs, 0);
+}
+
+/* Sensor supply control. On boards whose sensor VDD rides a switched rail
+ * (nice!nano: load switch gated by P0.13 = the board EXT_POWER node's
+ * control-gpios; the Pro Micro VCC pin IS the switched rail), ZMK can cut
+ * the rail behind this driver's back: underglow with AUTO_OFF_IDLE calls
+ * ext_power_disable() on every idle transition, and the ext_power driver
+ * re-applies the NVS-saved on/off state once settings load. Neither
+ * consumer knows the sensor exists, so vcc-gpios deliberately points at
+ * the SAME GPIO as the board node (a second owner of the pin, not a
+ * second pin) and this driver re-asserts the rail at the top of every
+ * init attempt: boot, each signature retry, and every health-check
+ * re-init. Called from work context only; the pin was configured once in
+ * adns5050_init(), so this is a single register write, and re-driving an
+ * already-active enable line is a no-op for the load switch. */
+static void adns5050_vcc_on(const struct device *dev)
+{
+	const struct adns5050_config *config = dev->config;
+
+	if (config->vcc.port != NULL) {
+		gpio_pin_set_dt(&config->vcc, 1);
+	}
 }
 
 static void adns5050_serial_write(const struct device *dev, uint8_t data)
@@ -302,6 +336,19 @@ static void adns5050_init_work_fn(struct k_work *work)
 	gpio_pin_configure_dt(&config->sdio, GPIO_OUTPUT_INACTIVE);
 	/* logical inactive = deselected = physically high (active-low pin) */
 	gpio_pin_configure_dt(&config->cs, GPIO_OUTPUT_INACTIVE);
+
+	/* Re-assert the supply rail on EVERY attempt (boot, retries, and
+	 * health-check re-inits - it may have been cut while ready). The bus
+	 * pins are configured FIRST (above), so the sensor powers up with CS
+	 * deselected and SCLK low instead of floating lines. The power-up
+	 * wait runs only on the first transaction of a cycle: retries at
+	 * INIT_RETRY_MS spacing need no extra wait. */
+	adns5050_vcc_on(dev);
+	if (data->init_attempts == 0U && CONFIG_ADNS5050_POWER_UP_DELAY_MS != 0) {
+		LOG_INF("vcc asserted, waiting %d ms for sensor power-up",
+			CONFIG_ADNS5050_POWER_UP_DELAY_MS);
+		k_msleep(CONFIG_ADNS5050_POWER_UP_DELAY_MS);
+	}
 
 	adns5050_write_reg(dev, ADNS5050_REG_CHIP_RESET, ADNS5050_CHIP_RESET_MAGIC);
 	k_msleep(55); /* datasheet maximum reset-to-ready time */
@@ -534,6 +581,20 @@ static int adns5050_init(const struct device *dev)
 		return -ENODEV;
 	}
 
+	if (config->vcc.port != NULL) {
+		if (!device_is_ready(config->vcc.port)) {
+			LOG_ERR("vcc-gpios controller not ready");
+			return -ENODEV;
+		}
+		/* Configure INACTIVE first (matches the board ext_power driver's
+		 * own init order - never two active drivers on the rail), then
+		 * let the first init attempt assert it. This runs at POST_KERNEL
+		 * priority 90, i.e. long before the ext_power driver (81) and the
+		 * underglow listener ever run - the rail starts OFF either way,
+		 * so no glitch window is introduced. */
+		gpio_pin_configure_dt(&config->vcc, GPIO_OUTPUT_INACTIVE);
+	}
+
 	data->dev = dev;
 	k_work_init(&data->poll_work, adns5050_poll_work_fn);
 	k_timer_init(&data->poll_timer, adns5050_poll_timer_fn, NULL);
@@ -557,6 +618,8 @@ static int adns5050_init(const struct device *dev)
 		.sclk = GPIO_DT_SPEC_INST_GET(n, sclk_gpios),                                      \
 		.sdio = GPIO_DT_SPEC_INST_GET(n, sdio_gpios),                                      \
 		.cs = GPIO_DT_SPEC_INST_GET(n, cs_gpios),                                          \
+		.vcc = COND_CODE_1(DT_INST_NODE_HAS_PROP(n, vcc_gpios),                            \
+				   (GPIO_DT_SPEC_INST_GET(n, vcc_gpios)), ({0})),                   \
 		.cpi = DT_INST_PROP(n, cpi),                                                       \
 		.invert_x = DT_INST_PROP(n, invert_x),                                             \
 		.invert_y = DT_INST_PROP(n, invert_y),                                             \

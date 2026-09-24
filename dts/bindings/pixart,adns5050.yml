@@ -20,6 +20,26 @@ description: |
 compatible: "pixart,adns5050"
 
 properties:
+  vcc-gpios:
+    type: phandle-array
+    required: false
+    description: |
+      Optional control pin for the sensor's supply rail (load-switch enable).
+
+      The driver drives it ACTIVE at device init and re-asserts it at the
+      top of EVERY init attempt, then waits ADNS5050_POWER_UP_DELAY_MS
+      (once per init cycle) before the first bus transaction.
+
+      CAUTION: on boards whose sensor rides a switched rail (nice!nano:
+      the Pro Micro VCC pin is gated by an internal load switch on P0.13),
+      this MUST point at the SAME GPIO the board's ext_power node controls
+      - e.g. <&gpio0 13 GPIO_ACTIVE_HIGH> on nice_nano_v2 - making this a
+      deliberate second owner of that pin, not a second pin. That is the
+      point: ZMK consumers of the rail (underglow AUTO_OFF_IDLE calling
+      ext_power_disable, or an NVS-restored ext_power off-state) can cut
+      it behind this driver's back; re-asserting here guarantees the
+      sensor stays powered regardless.
+
   sclk-gpios:
     type: phandle-array
     required: true
