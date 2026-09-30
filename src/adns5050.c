@@ -68,13 +68,6 @@ zmk_keymap_layer_index_t zmk_keymap_highest_layer_active(void);
  * indirection). */
 LOG_MODULE_REGISTER(adns5050, LOG_LEVEL_INF);
 
-/* Bench instrumentation (Attempt 47): default-off raw-delta logging. */
-#if IS_ENABLED(CONFIG_ADNS5050_DEBUG_DELTAS)
-#define ADNS5050_DEBUG_DELTAS 1
-#else
-#define ADNS5050_DEBUG_DELTAS 0
-#endif
-
 #define ADNS5050_POLL_MS 8
 
 /* Serial timing, from the datasheet AC table (see file header). */

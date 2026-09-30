@@ -97,7 +97,6 @@ config ADNS5050_DEBUG_DELTAS
 
 config ADNS5050_DEBUG_DIV
 	int "Raw-delta debug log down-sampling divisor"
-	depends on ADNS5050_DEBUG_DELTAS
 	default 8
 	range 1 1000
 	help
