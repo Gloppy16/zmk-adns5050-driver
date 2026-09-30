@@ -28,6 +28,19 @@
  * restores the NVS-saved off-state after settings load), so with vcc-gpios
  * set the driver re-asserts the rail at the top of EVERY init attempt
  * (see adns5050_vcc_on).
+ *
+ * Report sync (Attempt 47): ZMK's input listener (app/src/pointing/
+ * input_listener.c, unchanged through upstream main) only flushes the HID
+ * mouse report when the LAST input event of a batch carries sync=true;
+ * Zephyr's input core passes the sync flag through verbatim. Reporting
+ * X with sync=false and Y with sync=true therefore left pure-X motion
+ * (dy == 0) unflushed - X deltas accumulated in the listener until a
+ * stray non-zero dy flushed them, which the bench saw as an X-axis-only
+ * stutter. The report tail now terminates every batch with sync=true on
+ * whichever axis reported last (the pattern ZMK's own
+ * behavior_input_two_axis.c uses), so every motion poll produces exactly
+ * one HID report at the 125 Hz poll rate. See CONFIG_ADNS5050_DEBUG_DELTAS
+ * for the bench instrumentation that shows raw vs reported deltas.
  */
 
 #define DT_DRV_COMPAT pixart_adns5050
@@ -54,6 +67,13 @@ zmk_keymap_layer_index_t zmk_keymap_highest_layer_active(void);
  * LOG_MODULE_REGISTER (the level argument is used verbatim, no Kconfig
  * indirection). */
 LOG_MODULE_REGISTER(adns5050, LOG_LEVEL_INF);
+
+/* Bench instrumentation (Attempt 47): default-off raw-delta logging. */
+#if IS_ENABLED(CONFIG_ADNS5050_DEBUG_DELTAS)
+#define ADNS5050_DEBUG_DELTAS 1
+#else
+#define ADNS5050_DEBUG_DELTAS 0
+#endif
 
 #define ADNS5050_POLL_MS 8
 
@@ -116,6 +136,9 @@ struct adns5050_data {
 	uint8_t rid;
 	uint8_t rid2_inv;
 	uint8_t pid2;
+	/* CONFIG_ADNS5050_DEBUG_DELTAS down-sampler (log every Nth non-zero
+	 * poll); unused when the debug option is off. */
+	uint16_t dbg_div;
 };
 
 /* CS pulse while SCLK is low: resynchronizes the chip's serial state machine
@@ -529,6 +552,17 @@ static void adns5050_poll_work_fn(struct k_work *work)
 		return;
 	}
 
+	if (IS_ENABLED(CONFIG_ADNS5050_DEBUG_DELTAS)) {
+		/* 1-in-N down-sampled RAW sensor deltas, before inversion and
+		 * before any report-path logic. A run of 0x00/0xFF-class values
+		 * on one axis = bus/timing problem; clean values with a
+		 * stuttering cursor = report/host path problem. */
+		if (++data->dbg_div >= CONFIG_ADNS5050_DEBUG_DIV) {
+			data->dbg_div = 0;
+			LOG_INF("raw dx=%d dy=%d", dx, dy);
+		}
+	}
+
 	x = dx;
 	y = dy;
 	if (config->invert_x) {
@@ -561,10 +595,16 @@ static void adns5050_poll_work_fn(struct k_work *work)
 		}
 	}
 
-	if (x != 0) {
+	if (x != 0 && y != 0) {
+		/* Both axes moved: report X first WITHOUT sync, then Y with
+		 * sync - the batch terminator is the last event, matching
+		 * ZMK's own behavior_input_two_axis.c. */
 		input_report_rel(dev, INPUT_REL_X, x, false, K_FOREVER);
-	}
-	if (y != 0) {
+		input_report_rel(dev, INPUT_REL_Y, y, true, K_FOREVER);
+	} else if (x != 0) {
+		/* X-only poll: X must carry the sync - nothing else will. */
+		input_report_rel(dev, INPUT_REL_X, x, true, K_FOREVER);
+	} else if (y != 0) {
 		input_report_rel(dev, INPUT_REL_Y, y, true, K_FOREVER);
 	}
 }

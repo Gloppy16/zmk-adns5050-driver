@@ -84,4 +84,25 @@ config ADNS5050_TSCLK_NCS_WRITE_US
 	  (CPI, power-down, Chip_Reset) could silently abort. Leave at 20
 	  unless a bench scope says otherwise.
 
+config ADNS5050_DEBUG_DELTAS
+	bool "Log raw sensor deltas (bench instrumentation, default off)"
+	default n
+	help
+	  Log 1-in-ADNS5050_DEBUG_DIV down-sampled RAW sensor deltas (dx/dy,
+	  before inversion) at LOG_LEVEL_INF on every non-zero poll. Bench
+	  tool for the Attempt 47 X-axis stutter investigation: clean raw
+	  deltas under a stuttering cursor implicate the report/host path;
+	  0x00/0xFF-class runs on one axis implicate the bus/timing. Leave
+	  off for normal use - each line costs ~40 bytes of CDC bandwidth.
+
+config ADNS5050_DEBUG_DIV
+	int "Raw-delta debug log down-sampling divisor"
+	depends on ADNS5050_DEBUG_DELTAS
+	default 8
+	range 1 1000
+	help
+	  Log one raw-delta line per N non-zero polls (8 ms each), i.e. one
+	  line every N*8 ms while the ball is moving. 8 keeps the CDC log
+	  readable while still showing the 125 Hz cadence.
+
 endif # ADNS5050
