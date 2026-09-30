@@ -1,3 +1,6 @@
+Warning: This is entirely vibe-coded as I mess around with turnstone. I'm not sure why GLM 5.3 Flash wanted to fork the library but here we are. 
+
+
 # zmk-adns5050-driver
 
 ZMK input driver for the Pixart **ADNS-5050** optical mouse sensor over a
