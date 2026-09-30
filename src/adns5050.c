@@ -425,9 +425,14 @@ static void adns5050_init_work_fn(struct k_work *work)
 
 /* Runtime self-heal. Periodic while ready: read Product_ID and one burst.
  * - PID mismatch: the serial port or the sensor itself went away -> heal.
- * - A saturated delta pair (raw -1 and/or 0 => 0xFF-class bytes, exactly
- *   what a floating/open SDIO line reads) is one strike; strikes must be
- *   CONSECUTIVE - any real (non-saturated) motion resets the count.
+ * - A fully saturated delta pair - raw dx == -1 AND dy == -1, i.e. BOTH
+ *   motion bytes 0xFF, exactly what a floating/open SDIO line reads - is
+ *   one strike; strikes must be CONSECUTIVE - any other reading resets
+ *   the count.  (0,0) is the CORRECT at-rest reading on a healthy bus
+ *   and is explicitly NOT a strike: a still ball is a healthy ball.
+ *   A lone -1 on one axis (other axis 0) is ambiguous - it can be real
+ *   micro-motion - and is also not a strike; a spurious re-init (visible
+ *   pointer freeze) costs more than a delayed heal.
  * After CONFIG_ADNS5050_HEALTH_STRIKES consecutive strikes: stop polling,
  * mark not-ready, re-run the init retry loop.
  * Debounce: this work item only acts when cycle_done is set (a full init
@@ -467,10 +472,14 @@ static void adns5050_health_work_fn(struct k_work *work)
 	}
 
 	adns5050_read_burst(dev, &dx, &dy);
-	if ((dx == -1 || dx == 0) && (dy == -1 || dy == 0)) {
+	/* Strike = BOTH motion bytes 0xFF-class (raw -1 on both axes): the
+	 * open-SDIO signature.  (0,0) is the healthy at-rest reading; a lone
+	 * -1 on one axis is ambiguous micro-motion.  Anything else resets
+	 * the strike counter. */
+	if (dx == -1 && dy == -1) {
 		data->health_strikes++;
-		LOG_WRN("health check: saturated delta pair dx=%d dy=%d "
-			"(strike %u/%u, 0xFF-class = open SDIO signature)",
+		LOG_WRN("health check: fully saturated delta pair dx=%d dy=%d "
+			"(strike %u/%u, both bytes 0xFF = open SDIO signature)",
 			dx, dy, data->health_strikes,
 			CONFIG_ADNS5050_HEALTH_STRIKES);
 		if (data->health_strikes >= CONFIG_ADNS5050_HEALTH_STRIKES) {
@@ -482,7 +491,7 @@ static void adns5050_health_work_fn(struct k_work *work)
 		}
 	} else {
 		if (data->health_strikes != 0U) {
-			LOG_INF("health check: real motion dx=%d dy=%d, "
+			LOG_INF("health check: healthy delta dx=%d dy=%d, "
 				"strike counter reset",
 				dx, dy);
 		}
